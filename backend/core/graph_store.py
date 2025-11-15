@@ -180,7 +180,7 @@ class GraphStore:
         )
 
         // Create Decision nodes and LEAD_TO relationships
-        FOREACH (idx IN range(0, size(e.decisions)-1) |
+        FOREACH (idx IN range(0, size(e.decisions)) |
             MERGE (d:Decision {decision_id: e.event_id + '-decision-' + toString(idx)})
             ON CREATE SET 
                 d.text = e.decisions[idx],
@@ -192,7 +192,7 @@ class GraphStore:
         )
 
         // Create Task nodes with ALL properties and CREATES relationships
-        FOREACH (idx IN range(0, size(e.tasks)-1) |
+        FOREACH (idx IN range(0, size(e.tasks)) |
             MERGE (t:Task {task_id: e.event_id + '-task-' + toString(idx)})
             ON CREATE SET 
                 t.text = e.tasks[idx].text,
