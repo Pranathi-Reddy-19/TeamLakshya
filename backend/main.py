@@ -23,12 +23,14 @@ from .core.multi_channel_ingestion import IngestionConfig, MultiChannelIngestion
 from .core.notification_service import notification_service
 from .core.jira_service import jira_service, JIRAError
 from .core.embedding import get_embedding_model
+from .core.audio_service import audio_service
 
-# --- NEW IMPORTS ---
+# Import routers and authentication
 from .routers import auth as auth_router
 from .core.auth_service import get_current_active_user
 from .core.models import User
-# --- THIS IS THE FIX: ADD process_webhook_task ---
+
+# Import Celery tasks
 from .tasks import process_audio_task, run_ingestion_task, process_webhook_task
 
 # --- Singleton Instances ---
@@ -43,6 +45,7 @@ multi_ingestion_service = MultiChannelIngestionService(
 # --- Lifespan Management ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Handles application startup and shutdown events."""
     print("\n" + "="*60)
     print("APPLICATION STARTUP (v3: Decoupled w/ Celery)")
     print("="*60)
@@ -102,7 +105,12 @@ async def lifespan(app: FastAPI):
     
     # Audio & Jira Services
     print("Audio transcription service ready (in worker)")
-    print("Jira integration service ready")
+    
+    try:
+        jira_service.get_jira_client()
+        print("Jira integration service ready")
+    except Exception as e:
+        print(f"Jira integration service disabled: {e}")
     
     print("Ingestion service ready. Trigger ingestion via API.")
     
@@ -133,12 +141,15 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# --- CORS ---
+# --- CORS Configuration ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173", "http://localhost:3000",
-        "http://127.0.0.1:5173", "http://127.0.0.1:3000", "http://localhost:5174"
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000",
+        "http://localhost:5174"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -153,15 +164,18 @@ app.include_router(auth_router.router, prefix="/api/v1/auth", tags=["Authenticat
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
+
 class HealthResponse(BaseModel):
     api: Dict[str, str]
     neo4j: Dict[str, str]
     milvus: Dict[str, str]
+
 class ConnectorStatus(BaseModel):
     source: str
     status: str
     last_run: Optional[str] = None
     error: Optional[str] = None
+
 class IngestionRunResponse(BaseModel):
     source: str
     status: str
@@ -169,17 +183,20 @@ class IngestionRunResponse(BaseModel):
     total_events: int
     vectors_inserted: int
     duration_seconds: float
+
 class AudioUploadResponse(BaseModel):
     file_name: str
     status: str
     message: str
     events_processed: int
+
 class QueryRequest(BaseModel):
     text: str
     top_k: int = 5
     source_filter: Optional[str] = None
     include_graph_context: bool = True
     chat_history: List[ChatMessage] = Field(default_factory=list)
+
 class EvidenceItem(BaseModel):
     id: str
     text: str
@@ -187,79 +204,97 @@ class EvidenceItem(BaseModel):
     timestamp: str
     score: float
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
 class QueryResponse(BaseModel):
     query: str
     answer: str
     evidence: List[EvidenceItem]
     metadata: Dict[str, Any]
+
 class TaskItem(BaseModel):
     id: str
     title: str
     status: str
     assignee: Optional[str] = None
     due_date: Optional[str] = None
+
 class TaskStatusUpdate(BaseModel):
     status: str
+
 class SummarizationRequest(BaseModel):
     channel_id: str
     lookback_hours: int = 24
     summary_type: Literal["brief", "detailed"] = "brief"
+
 class SummarizationResponse(BaseModel):
     channel_id: str
     summary: str
     event_count: int
     lookback_hours: int
+
 class ChartDataPoint(BaseModel):
     label: str
     value: float
+
 class SentimentTimelinePoint(BaseModel):
     date: str
     positive: float
     neutral: float
     negative: float
+
 class PerformanceAnalyticsResponse(BaseModel):
     top_active_channels: List[ChartDataPoint]
     top_contributors: List[ChartDataPoint]
     sentiment_over_time: List[SentimentTimelinePoint]
     avg_response_time_seconds: Optional[float] = None
+
 class SentimentOverviewData(BaseModel):
     overall_sentiment: str
     positive_pct: float
     neutral_pct: float
     negative_pct: float
     total_messages: int
+
 class ChannelSentimentSummary(BaseModel):
     channel: str
     positive: int
     neutral: int
     negative: int
     total: int
+
 class TrustNode(BaseModel):
     user: str
     agreements: int
     strength: float
+
 class TrustEdge(BaseModel):
     source: str
     target: str
     weight: int
+
 class TrustGraphResponse(BaseModel):
     nodes: List[TrustNode]
     edges: List[TrustEdge]
+
 class JiraIssueRequest(BaseModel):
     project_key: str
     summary: str
     description: str
     task_id: Optional[str] = None
+
 class JiraIssueResponse(BaseModel):
     key: str
     url: str
+
 class RiskAnalysisRequest(BaseModel):
     decision_text: str = Field(..., min_length=10)
+
 class DependencyItem(BaseModel):
     node_type: str = Field(..., description="Type of node, e.g., 'Task', 'Project'")
     node_id: str = Field(..., description="The ID of the node")
     summary: str = Field(..., description="The summary or text of the node")
     link_type: str = Field(..., description="How it's linked, e.g., 'DEPENDS_ON', 'PART_OF'")
+
 class SentimentItem(BaseModel):
     user_name: str
     text: str
@@ -267,36 +302,43 @@ class SentimentItem(BaseModel):
     sentiment_score: float
     channel: str
     timestamp: str
+
 class RiskAnalysisResponse(BaseModel):
     decision_text: str
     key_entities: List[str]
     dependencies: List[DependencyItem]
     related_sentiments: List[SentimentItem]
     summary: str
+
 class KnowledgeSilo(BaseModel):
     topic: str = Field(..., description="The topic or project being siloed")
     user_id: str
     user_name: str
     event_count: int = Field(..., description="Number of events this user authored on the topic")
     percentage: float = Field(..., description="Percentage of all events on this topic authored by this user")
+
 class KeyInfluencer(BaseModel):
     user_id: str
     user_name: str
     agreements_received: int
     replies_received: int
     total_score: int
+
 class TeamInteraction(BaseModel):
     team_a: str
     team_b: str
     interaction_count: int
+
 class TeamDynamicsResponse(BaseModel):
     knowledge_silos: List[KnowledgeSilo]
     key_influencers: List[KeyInfluencer]
     team_interactions: List[TeamInteraction]
 
+
 # --- Root Endpoint ---
 @app.get("/", tags=["General"])
 def read_root():
+    """Welcome endpoint for the API."""
     return {
         "message": "Context IQ API is running.",
         "version": "0.9.1",
@@ -308,6 +350,7 @@ def read_root():
 # --- WebSocket ---
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
+    """Handles persistent WebSocket connections for real-time notifications."""
     await notification_service.connect(websocket, user_id)
     try:
         while True:
@@ -323,18 +366,26 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
 # --- Health Check ---
 @app.get("/api/v1/health", response_model=HealthResponse, tags=["Health"])
 async def get_health():
-    services = {"api": {"status": "online"}, "neo4j": {"status": "offline"}, "milvus": {"status": "offline"}}
+    """Check the health of all system components."""
+    services = {
+        "api": {"status": "online"},
+        "neo4j": {"status": "offline"},
+        "milvus": {"status": "offline"}
+    }
+    
     try:
         driver = await db_manager.get_neo4j_driver()
         await driver.verify_connectivity()
         services["neo4j"]["status"] = "online"
     except Exception as e:
         services["neo4j"]["error"] = str(e)
+    
     try:
         db_manager.get_milvus_client().list_collections()
         services["milvus"]["status"] = "online"
     except Exception as e:
         services["milvus"]["error"] = str(e)
+    
     return services
 
 
@@ -343,6 +394,7 @@ async def get_health():
 # --- Ingestion Endpoints ---
 @app.get("/api/v1/ingest/connectors", response_model=List[ConnectorStatus], tags=["Ingestion"])
 def get_connector_status(current_user: User = Depends(get_current_active_user)):
+    """Get the status of all configured data source connectors."""
     try:
         print(f"Ingestion connectors accessed by user: {current_user.username}")
         return multi_ingestion_service.get_connector_status()
@@ -355,6 +407,7 @@ async def run_ingestion_for_source(
     source_name: str,
     current_user: User = Depends(get_current_active_user)
 ):
+    """Queue an ingestion task for a specific data source."""
     log_action(
         user_id=current_user.username,
         action=f"QUEUE_INGESTION_{source_name.upper()}",
@@ -379,6 +432,10 @@ async def run_ingestion_for_source(
 # --- SLACK WEBHOOK ENDPOINT ---
 @app.post("/api/v1/ingest/events/slack", tags=["Ingestion"])
 async def receive_slack_events(events: List[CanonicalEvent]):
+    """
+    Receive events from Slack webhook integration.
+    This endpoint processes Slack events in canonical format.
+    """
     if not events:
         return {"status": "no_events_received"}
     
@@ -395,12 +452,45 @@ async def receive_slack_events(events: List[CanonicalEvent]):
         raise HTTPException(status_code=500, detail=f"Failed to process events: {e}")
 
 
+# --- GENERIC WEBHOOK ENDPOINT (FOR JIRA, NOTION, ETC.) ---
+@app.post("/api/v1/ingest/webhook/{source_name}", tags=["Ingestion"])
+async def receive_generic_webhook(
+    source_name: str,
+    request: Request,
+):
+    """
+    A generic, unsecured endpoint to receive webhooks from various sources
+    like Jira, Notion, etc.
+    
+    This endpoint immediately queues a background task for processing.
+    The webhook sender receives an immediate 200 OK response.
+    """
+    try:
+        # Get the raw JSON payload
+        payload = await request.json()
+    except Exception as e:
+        # Fallback if payload isn't JSON - capture raw body
+        payload = {"raw_body": (await request.body()).decode('utf-8')}
+        
+    print(f"Received webhook for source: {source_name}")
+    
+    # Queue the task with Celery for async processing
+    process_webhook_task.delay(source_name, payload)
+    
+    # Immediately return a 200 OK to the webhook sender
+    return {"status": "event_queued"}
+
+
 # --- Audio Upload ---
 @app.post("/api/v1/ingest/upload-audio", response_model=AudioUploadResponse, tags=["Ingestion"])
 async def upload_audio_file(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_active_user)
 ):
+    """
+    Upload an audio file for transcription and ingestion.
+    The file is saved and queued for processing by a Celery worker.
+    """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file name specified.")
 
@@ -428,42 +518,13 @@ async def upload_audio_file(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- THIS IS THE FIX: THE MISSING WEBHOOK ENDPOINT ---
-@app.post("/api/v1/ingest/webhook/{source_name}", tags=["Ingestion"])
-async def receive_generic_webhook(
-    source_name: str,
-    request: Request,
-):
-    """
-    A generic, unsecured endpoint to receive webhooks from various sources
-    like Jira, Notion, etc.
-    
-    This endpoint immediately queues a background task for processing.
-    """
-    try:
-        # We must get the raw body, as different services send different formats
-        payload = await request.json()
-    except Exception as e:
-        # Fallback if payload isn't json
-        payload = {"raw_body": (await request.body()).decode('utf-8')}
-        
-    print(f"Received webhook for source: {source_name}")
-    
-    # --- DELEGATE TO CELERY ---
-    # We queue the task with the source name and the full payload
-    process_webhook_task.delay(source_name, payload)
-    
-    # Immediately return a 200 OK to the webhook sender
-    return {"status": "event_queued"}
-# --- END OF FIX ---
-
-
 # --- Jira Integration ---
 @app.post("/api/v1/integrations/jira/create-issue", response_model=JiraIssueResponse, tags=["Integrations"])
 async def create_jira_issue(
     request: JiraIssueRequest,
     current_user: User = Depends(get_current_active_user)
 ):
+    """Create a new Jira issue and optionally link it to a task in the knowledge graph."""
     try:
         log_action(
             user_id=current_user.username,
@@ -472,14 +533,17 @@ async def create_jira_issue(
             level=AuditLevel.INFO,
             details={"project": request.project_key}
         )
+        
         result = await asyncio.to_thread(
             jira_service.create_issue,
             project_key=request.project_key,
             summary=request.summary,
             description=request.description
         )
+        
         if request.task_id:
             await GraphStore().link_task_to_external_id(request.task_id, result["key"], "jira")
+        
         return JiraIssueResponse(key=result["key"], url=result["url"])
     except JIRAError as e:
         raise HTTPException(status_code=400, detail=f"Jira Error: {e.text}")
@@ -494,7 +558,12 @@ async def post_query(
     query_request: QueryRequest,
     current_user: User = Depends(get_current_active_user)
 ):
+    """
+    Perform a RAG-based query against the knowledge base.
+    Returns an AI-generated answer with supporting evidence.
+    """
     print(f"Query from {current_user.username}: {query_request.text}")
+    
     rag_service = RAGService()
     filters = f"source == '{query_request.source_filter}'" if query_request.source_filter else None
 
@@ -529,6 +598,7 @@ async def post_query(
 
 
 async def _generate_answer(query: str, context: List[Dict], chat_history=None) -> str:
+    """Helper function to generate an answer using the LLM service."""
     history = [msg.model_dump() for msg in (chat_history or [])]
     try:
         return await asyncio.to_thread(
@@ -536,17 +606,23 @@ async def _generate_answer(query: str, context: List[Dict], chat_history=None) -
             query, context, history, include_sources=True
         )
     except Exception as e:
-        return f"Error: {e}"
+        return f"Error generating answer: {e}"
 
 
 # --- Task Management ---
 @app.get("/api/v1/tasks/open", response_model=List[TaskItem], tags=["Productivity"])
 async def get_open_tasks(current_user: User = Depends(get_current_active_user)):
+    """Get all open tasks from the knowledge graph."""
     return await GraphStore().get_open_tasks()
 
 
 @app.put("/api/v1/tasks/{task_id}", response_model=TaskItem, tags=["Productivity"])
-async def update_task(task_id: str, update: TaskStatusUpdate, current_user: User = Depends(get_current_active_user)):
+async def update_task(
+    task_id: str,
+    update: TaskStatusUpdate,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Update the status of a task and notify the user via WebSocket."""
     gs = GraphStore()
     task = await gs.update_task_status(task_id, update.status, current_user.username)
     
@@ -554,20 +630,27 @@ async def update_task(task_id: str, update: TaskStatusUpdate, current_user: User
         "type": "TASK_UPDATE",
         "payload": {"text": f"Task updated to {update.status}", "task_id": task_id}
     })
+    
     return task
 
 
 # --- Summarization ---
 @app.post("/api/v1/summarize", response_model=SummarizationResponse, tags=["Productivity"])
-async def summarize_channel(request: SummarizationRequest, current_user: User = Depends(get_current_active_user)):
+async def summarize_channel(
+    request: SummarizationRequest,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Generate an AI summary of recent activity in a specific channel."""
     events = await GraphStore().get_events_for_channel(request.channel_id, request.lookback_hours)
     
     if not events:
-        raise HTTPException(404, "No events found")
+        raise HTTPException(404, "No events found for the specified channel and time period")
+    
     history = [{"user_name": e["user_name"], "text": e["text"]} for e in events]
     summary = await asyncio.to_thread(
         llm_service.generate_summary, history, request.channel_id, request.summary_type
     )
+    
     return SummarizationResponse(
         channel_id=request.channel_id,
         summary=summary,
@@ -579,12 +662,14 @@ async def summarize_channel(request: SummarizationRequest, current_user: User = 
 # --- Analytics ---
 @app.get("/api/v1/analytics/performance", response_model=PerformanceAnalyticsResponse, tags=["Analytics"])
 async def get_performance_analytics(current_user: User = Depends(get_current_active_user)):
+    """Get performance analytics including active channels, contributors, and sentiment trends."""
     return await GraphStore().get_performance_analytics()
 
 
 # --- Sentiment & Trust Endpoints ---
 @app.get("/api/v1/sentiment/overview", response_model=SentimentOverviewData, tags=["Analytics"])
 async def get_sentiment_overview(current_user: User = Depends(get_current_active_user)):
+    """Get an overview of sentiment statistics across all channels."""
     try:
         return await GraphStore().get_sentiment_stats()
     except Exception as e:
@@ -594,6 +679,7 @@ async def get_sentiment_overview(current_user: User = Depends(get_current_active
 
 @app.get("/api/v1/sentiment/channels/summary", response_model=List[ChannelSentimentSummary], tags=["Analytics"])
 async def get_channel_sentiment_summary(current_user: User = Depends(get_current_active_user)):
+    """Get a summary of sentiment statistics broken down by channel."""
     try:
         return await GraphStore().get_sentiment_by_channel_summary()
     except Exception as e:
@@ -602,7 +688,11 @@ async def get_channel_sentiment_summary(current_user: User = Depends(get_current
 
 
 @app.get("/api/v1/sentiment/timeline", response_model=List[SentimentTimelinePoint], tags=["Analytics"])
-async def get_sentiment_timeline(days: int = 7, current_user: User = Depends(get_current_active_user)):
+async def get_sentiment_timeline(
+    days: int = 7,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get sentiment trends over time (default: last 7 days)."""
     try:
         return await GraphStore().get_sentiment_timeline(days_limit=days)
     except Exception as e:
@@ -610,10 +700,15 @@ async def get_sentiment_timeline(days: int = 7, current_user: User = Depends(get
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- NEW ENDPOINT: TEAM DYNAMICS INSIGHTS ---
+# --- Team Dynamics Endpoint ---
 @app.get("/api/v1/analytics/team-dynamics", response_model=TeamDynamicsResponse, tags=["Analytics"])
 async def get_team_dynamics(
-    silo_threshold: float = Query(default=0.7, ge=0.5, le=1.0, description="Percentage to be considered a silo (e.g., 0.7 = 70%)"),
+    silo_threshold: float = Query(
+        default=0.7,
+        ge=0.5,
+        le=1.0,
+        description="Percentage to be considered a silo (e.g., 0.7 = 70%)"
+    ),
     current_user: User = Depends(get_current_active_user)
 ):
     """
@@ -644,7 +739,7 @@ async def get_team_dynamics(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- NEW ENDPOINT: RISK ANALYSIS SUITE ---
+# --- Risk Analysis Endpoint ---
 @app.post("/api/v1/analytics/risk-analysis", response_model=RiskAnalysisResponse, tags=["Analytics"])
 async def run_risk_analysis(
     request: RiskAnalysisRequest,
@@ -681,9 +776,7 @@ async def run_risk_analysis(
         dependencies = analysis_data.get("dependencies", [])
         sentiments = analysis_data.get("sentiments", [])
 
-        # --- THIS IS THE FIX ---
-        # We create the complex strings OUTSIDE the main f-string
-        
+        # Build summary strings for dependencies and sentiments
         deps_summary = "\n- ".join(
             [f"{d['node_type']} '{d['summary']}' (Linked via {d['link_type']})" for d in dependencies]
         ) if dependencies else "None"
@@ -724,4 +817,10 @@ async def run_risk_analysis(
 # --- Run Server ---
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
+    uvicorn.run(
+        "backend.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info"
+    )
