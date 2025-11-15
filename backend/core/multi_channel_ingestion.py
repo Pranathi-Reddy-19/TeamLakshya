@@ -609,16 +609,22 @@ class GmailConnector(DataConnector):
                 if label_query:
                     query += f" ({label_query})"
             
-            results = self.service.users().messages().list(
-                userId='me', q=query, maxResults=self.config.batch_size
-            ).execute()
+            # FIXED: Wrap blocking Google API call in asyncio.to_thread
+            results = await asyncio.to_thread(
+                self.service.users().messages().list(
+                    userId='me', q=query, maxResults=self.config.batch_size
+                ).execute
+            )
             messages = results.get('messages', [])
             
             for msg_ref in messages:
                 try:
-                    message = self.service.users().messages().get(
-                        userId='me', id=msg_ref['id'], format='full'
-                    ).execute()
+                    # FIXED: Wrap blocking Google API call in asyncio.to_thread
+                    message = await asyncio.to_thread(
+                        self.service.users().messages().get(
+                            userId='me', id=msg_ref['id'], format='full'
+                        ).execute
+                    )
                     headers = message['payload']['headers']
                     subject = next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject')
                     from_email = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
@@ -704,14 +710,21 @@ class GoogleDocsConnector(DataConnector):
                     continue
                 # Note: 'drive.metadata.readonly' scope is required for this 'files.list' call
                 query = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.document' and modifiedTime > '{after_date_iso}'"
-                results = drive_service.files().list(
-                    q=query, pageSize=self.config.batch_size, fields="files(id, name, modifiedTime, owners)"
-                ).execute()
+                
+                # FIXED: Wrap blocking Google API call in asyncio.to_thread
+                results = await asyncio.to_thread(
+                    drive_service.files().list(
+                        q=query, pageSize=self.config.batch_size, fields="files(id, name, modifiedTime, owners)"
+                    ).execute
+                )
                 files = results.get('files', [])
                 
                 for file in files:
                     try:
-                        document = docs_service.documents().get(documentId=file['id']).execute()
+                        # FIXED: Wrap blocking Google API call in asyncio.to_thread
+                        document = await asyncio.to_thread(
+                            docs_service.documents().get(documentId=file['id']).execute
+                        )
                         text = self._extract_doc_text(document)
                         owner = file.get('owners', [{}])[0]
                         owner_name = owner.get('displayName', 'Unknown')
@@ -1088,7 +1101,8 @@ class MultiChannelIngestionService:
             ext.get('redacted_text', '')
             for ext in extractions
         ]
-        embeddings = embedding_service.get_embeddings(text_to_embed)
+        # FIXED: Wrap blocking get_embeddings call in asyncio.to_thread to prevent event loop blocking
+        embeddings = await asyncio.to_thread(embedding_service.get_embeddings, text_to_embed)
         print(f"✓ Generated {len(embeddings)} embeddings")
         
         # Store in Milvus
