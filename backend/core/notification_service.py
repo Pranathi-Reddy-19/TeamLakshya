@@ -21,9 +21,10 @@ class NotificationService:
 
     async def connect(self, websocket: WebSocket, user_id: str):
         """
-        Accepts a new WebSocket connection and registers it.
+        Registers an already-accepted WebSocket connection.
+        FastAPI automatically accepts the WebSocket before this method is called.
         """
-        await websocket.accept()
+        # REMOVED: await websocket.accept()  <--- This was causing the connection to close immediately
         self.active_connections[user_id] = websocket
         print(f"✓ WebSocket connected for user: {user_id} (Total: {len(self.active_connections)})")
 

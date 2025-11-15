@@ -14,87 +14,117 @@ from .core.vector_store import VectorStore
 from .core.graph_store import GraphStore
 from .core.notification_service import notification_service
 from .core.jira_service import jira_service
+from .core.db_connect import db_manager
 
 # Configure logging
 log = logging.getLogger(__name__)
 
-# --- Singleton Instances for the Worker ---
-# The worker needs its own instances of these services
-try:
-    ingestion_config = IngestionConfig()
-    vector_store = VectorStore()
-    graph_store = GraphStore()
-    
-    multi_ingestion_service = MultiChannelIngestionService(
-        config=ingestion_config,
-        vector_store=vector_store,
-        graph_store=graph_store
-    )
-    print("Celery worker: Services initialized")
-except Exception as e:
-    print(f"Celery worker: Error initializing services: {e}")
-    multi_ingestion_service = None
+# --- REMOVED: Global singleton instances ---
+# We will create NEW instances inside each task's event loop
+# This fixes the Neo4j async event loop issues
+
+
+# --- Helper function to run async tasks ---
+def run_async_task(task_coro):
+    """
+    Creates a new event loop to run an async task and properly
+    manages the database connections for that loop.
+    """
+    results = None
+    try:
+        results = asyncio.run(task_coro())
+    except Exception as e:
+        print(f"Error in async task execution: {e}")
+        traceback.print_exc()
+    finally:
+        # Ensure connections created *in this loop* are closed
+        try:
+            # We must use a new loop just to close the connections
+            # if the main loop (asyncio.run) failed or is closed.
+            asyncio.run(db_manager.close_connections())
+        except Exception as e:
+            print(f"Error closing DB connections: {e}")
+    return results
+
 
 # --- Task 1: Audio Processing ---
 @celery_app.task(name="backend.tasks.process_audio_task")
 def process_audio_task(temp_file_path_str: str, original_filename: str):
     """
     Celery task to transcribe audio, create a CanonicalEvent, and ingest it.
+    Sets up a new async context for each run.
     """
-    if not multi_ingestion_service:
-        return f"Error: Ingestion service not available."
-
-    temp_file_path = Path(temp_file_path_str)
     
-    try:
-        print(f"Task process_audio_task: Starting for {original_filename}")
-        result = audio_service.transcribe_audio_file(str(temp_file_path))
-        text = result.get("text")
+    async def async_audio_wrapper():
+        """This coroutine runs in a new event loop."""
         
-        if not text:
-            raise Exception("Transcription failed or produced no text.")
-
-        event = CanonicalEvent(
-            id=f"audio-{original_filename}-{datetime.now().timestamp()}",
-            source="zoom", # Or "local_audio"
-            channel=f"meeting-{original_filename}",
-            user_id="transcriber",
-            user_name="Meeting AI",
-            text=text,
-            timestamp=datetime.now(),
-            raw_data={"file": original_filename, "segments": len(result.get("segments", []))}
-        )
-
-        # Run the async ingestion processing
-        # We must use asyncio.run() because this task is sync, but the service is async
-        asyncio.run(
-            multi_ingestion_service.process_and_store_events([event])
+        # 1. Initialize driver *within* this new loop
+        await db_manager.get_neo4j_driver()
+        
+        # 2. Create NEW instances of services for this loop
+        graph_store = GraphStore()
+        vector_store = VectorStore()
+        config = IngestionConfig()
+        
+        service = MultiChannelIngestionService(
+            config=config,
+            vector_store=vector_store,
+            graph_store=graph_store
         )
         
-        print(f"Task process_audio_task: Successfully processed {original_filename}")
+        temp_file_path = Path(temp_file_path_str)
         
-        # Notify user (optional but good)
-        asyncio.run(notification_service.broadcast({
-            "type": "AUDIO_PROCESSED",
-            "payload": {"filename": original_filename, "status": "success"}
-        }))
+        try:
+            print(f"Task process_audio_task: Starting for {original_filename}")
+            result = audio_service.transcribe_audio_file(str(temp_file_path))
+            text = result.get("text")
+            
+            if not text:
+                raise Exception("Transcription failed or produced no text.")
 
-        return f"Successfully processed {original_filename}"
+            event = CanonicalEvent(
+                id=f"audio-{original_filename}-{datetime.now().timestamp()}",
+                source="zoom",  # Or "local_audio"
+                channel=f"meeting-{original_filename}",
+                user_id="transcriber",
+                user_name="Meeting AI",
+                text=text,
+                timestamp=datetime.now(),
+                raw_data={"file": original_filename, "segments": len(result.get("segments", []))}
+            )
 
-    except Exception as e:
-        print(f"Task process_audio_task: FAILED for {original_filename}: {e}")
-        asyncio.run(notification_service.broadcast({
-            "type": "AUDIO_PROCESSED",
-            "payload": {"filename": original_filename, "status": "error", "error": str(e)}
-        }))
-        return f"Error processing {original_filename}: {e}"
-    finally:
-        # Clean up the temp file
-        if temp_file_path.exists():
-            try: 
-                temp_file_path.unlink()
-            except Exception as e:
-                print(f"Failed to delete temp file {temp_file_path_str}: {e}")
+            # Process and store the event
+            await service.process_and_store_events([event])
+            
+            print(f"Task process_audio_task: Successfully processed {original_filename}")
+            
+            # Notify user
+            await notification_service.broadcast({
+                "type": "AUDIO_PROCESSED",
+                "payload": {"filename": original_filename, "status": "success"}
+            })
+
+            return f"Successfully processed {original_filename}"
+
+        except Exception as e:
+            print(f"Task process_audio_task: FAILED for {original_filename}: {e}")
+            traceback.print_exc()
+            
+            await notification_service.broadcast({
+                "type": "AUDIO_PROCESSED",
+                "payload": {"filename": original_filename, "status": "error", "error": str(e)}
+            })
+            return f"Error processing {original_filename}: {e}"
+            
+        finally:
+            # Clean up the temp file
+            if temp_file_path.exists():
+                try: 
+                    temp_file_path.unlink()
+                except Exception as e:
+                    print(f"Failed to delete temp file {temp_file_path_str}: {e}")
+    
+    return run_async_task(async_audio_wrapper)
 
 
 # --- Task 2: Manual Ingestion ---
@@ -102,92 +132,149 @@ def process_audio_task(temp_file_path_str: str, original_filename: str):
 def run_ingestion_task(source_name: str, lookback_hours: int = 72):
     """
     Celery task to run a manual ingestion job for a specific source.
+    Sets up a new async context for each run.
     """
-    if not multi_ingestion_service:
-        return f"Error: Ingestion service not available."
     
-    try:
-        print(f"Task run_ingestion_task: Starting for {source_name}")
+    async def async_ingestion_wrapper():
+        """This coroutine runs in a new event loop."""
         
-        # Update config if needed (we'll pass it for simplicity)
-        multi_ingestion_service.config.lookback_hours = lookback_hours
+        # 1. Initialize driver *within* this new loop
+        await db_manager.get_neo4j_driver()
 
-        # Run the async ingestion
-        stats = asyncio.run(
-            multi_ingestion_service.run_ingestion_for_source(source_name)
+        # 2. Create NEW instances of services for this loop
+        config = IngestionConfig()
+        config.lookback_hours = lookback_hours
+        
+        graph_store = GraphStore()
+        vector_store = VectorStore()
+        
+        service = MultiChannelIngestionService(
+            config=config,
+            vector_store=vector_store,
+            graph_store=graph_store
         )
         
-        print(f"Task run_ingestion_task: Completed for {source_name}. Events: {stats.get('total_events')}")
+        print(f"Task run_ingestion_task: Starting for {source_name}")
+        stats = {}
         
-        # Notify user
-        asyncio.run(notification_service.broadcast({
+        try:
+            # Run the async ingestion
+            stats = await service.run_ingestion_for_source(source_name)
+            
+            print(f"Task run_ingestion_task: Completed for {source_name}. Events: {stats.get('total_events')}")
+            stats.setdefault("status", "success")
+            
+        except Exception as e:
+            print(f"Task run_ingestion_task: FAILED for {source_name}: {e}")
+            traceback.print_exc()
+            stats = {
+                "source": source_name,
+                "status": "error",
+                "error": str(e),
+                "message": f"Ingestion failed: {e}",
+                "total_events": 0,
+                "vectors_inserted": 0,
+                "duration_seconds": 0
+            }
+        
+        # 3. Broadcast notification
+        print(f"Broadcasting message: INGESTION_COMPLETE")
+        await notification_service.broadcast({
             "type": "INGESTION_COMPLETE",
             "payload": stats
-        }))
+        })
         
         return stats
-        
-    except Exception as e:
-        print(f"Task run_ingestion_task: FAILED for {source_name}: {e}")
-        stats = {
-            "source": source_name,
-            "status": "error",
-            "error": str(e),
-            "message": f"Ingestion failed: {e}",
-            "total_events": 0,
-            "vectors_inserted": 0,
-            "duration_seconds": 0
-        }
-        asyncio.run(notification_service.broadcast({
-            "type": "INGESTION_COMPLETE",
-            "payload": stats
-        }))
-        return stats
+    
+    return run_async_task(async_ingestion_wrapper)
 
-# --- Task 3: Generic Webhook Processing (THIS WAS MISSING) ---
+
+# --- Task 3: Generic Webhook Processing ---
 @celery_app.task(name="backend.tasks.process_webhook_task")
 def process_webhook_task(source_name: str, payload: Dict[str, Any]):
     """
     Celery task to process an incoming webhook.
     It identifies the source and dispatches to the correct handler.
+    Sets up a new async context for each run.
     """
-    if not multi_ingestion_service:
-        log.error(f"Task process_webhook_task: Ingestion service not available.")
-        return "Error: Ingestion service not available."
-
-    log.info(f"Processing webhook for: {source_name}")
     
-    try:
-        events_to_ingest = []
+    async def async_webhook_wrapper():
+        """This coroutine runs in a new event loop."""
         
-        # --- Dispatch based on source ---
-        if source_name == 'jira':
-            events_to_ingest = _handle_jira_webhook(payload)
+        # 1. Initialize driver *within* this new loop
+        await db_manager.get_neo4j_driver()
         
-        elif source_name == 'notion':
-            events_to_ingest = _handle_notion_webhook(payload)
+        # 2. Create NEW instances of services for this loop
+        config = IngestionConfig()
+        graph_store = GraphStore()
+        vector_store = VectorStore()
+        
+        service = MultiChannelIngestionService(
+            config=config,
+            vector_store=vector_store,
+            graph_store=graph_store
+        )
+        
+        log.info(f"Processing webhook for: {source_name}")
+        
+        try:
+            events_to_ingest = []
             
-        # ... (add other handlers as needed) ...
-        
-        else:
-            log.warning(f"No handler found for webhook source: {source_name}")
-            return f"No handler for {source_name}"
+            # --- Dispatch based on source ---
+            if source_name == 'jira':
+                events_to_ingest = _handle_jira_webhook(payload)
             
-        # --- Ingest any extracted events ---
-        if events_to_ingest:
-            log.info(f"Ingesting {len(events_to_ingest)} events from {source_name} webhook")
-            asyncio.run(
-                multi_ingestion_service.process_and_store_events(events_to_ingest)
-            )
-            return f"Successfully processed {len(events_to_ingest)} events from {source_name}"
-        else:
-            log.info(f"No actionable events found in {source_name} webhook.")
-            return f"No actionable events from {source_name}"
+            elif source_name == 'notion':
+                events_to_ingest = _handle_notion_webhook(payload)
+                
+            # ... (add other handlers as needed) ...
+            
+            else:
+                log.warning(f"No handler found for webhook source: {source_name}")
+                await notification_service.broadcast({
+                    "type": "WEBHOOK_PROCESSED",
+                    "payload": {"source": source_name, "status": "no_handler"}
+                })
+                return f"No handler for {source_name}"
+                
+            # --- Ingest any extracted events ---
+            if events_to_ingest:
+                log.info(f"Ingesting {len(events_to_ingest)} events from {source_name} webhook")
+                await service.process_and_store_events(events_to_ingest)
+                
+                await notification_service.broadcast({
+                    "type": "WEBHOOK_PROCESSED",
+                    "payload": {
+                        "source": source_name, 
+                        "status": "success",
+                        "events_count": len(events_to_ingest)
+                    }
+                })
+                return f"Successfully processed {len(events_to_ingest)} events from {source_name}"
+            else:
+                log.info(f"No actionable events found in {source_name} webhook.")
+                await notification_service.broadcast({
+                    "type": "WEBHOOK_PROCESSED",
+                    "payload": {"source": source_name, "status": "no_events"}
+                })
+                return f"No actionable events from {source_name}"
 
-    except Exception as e:
-        log.error(f"Task process_webhook_task: FAILED for {source_name}: {e}")
-        traceback.print_exc()
-        return f"Error processing {source_name} webhook: {e}"
+        except Exception as e:
+            log.error(f"Task process_webhook_task: FAILED for {source_name}: {e}")
+            traceback.print_exc()
+            
+            await notification_service.broadcast({
+                "type": "WEBHOOK_PROCESSED",
+                "payload": {
+                    "source": source_name, 
+                    "status": "error",
+                    "error": str(e)
+                }
+            })
+            return f"Error processing {source_name} webhook: {e}"
+    
+    return run_async_task(async_webhook_wrapper)
+
 
 # --- Helper Functions for Webhook Parsing ---
 # (These live in tasks.py for simplicity)
@@ -237,7 +324,7 @@ def _handle_jira_webhook(payload: Dict[str, Any]) -> List[CanonicalEvent]:
             user_id=user.get('name', 'jira_user'),
             user_name=user.get('displayName', 'Jira User'),
             text=text,
-            timestamp=datetime.now(), # Jira update webhooks don't have a great timestamp
+            timestamp=datetime.now(),  # Jira update webhooks don't have a great timestamp
             raw_data=payload
         )]
 

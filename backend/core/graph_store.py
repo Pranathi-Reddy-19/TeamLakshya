@@ -25,6 +25,7 @@ class GraphStore:
     ADDED: User authentication functions.
     ADDED: Risk analysis data retrieval.
     ADDED: Team dynamics analysis (knowledge silos, influencers, cross-team interactions).
+    FIXED: Schema alignment - all properties and relationships now match between insert and query methods.
     """
     
     # Agreement keywords for detecting consensus
@@ -69,6 +70,7 @@ class GraphStore:
     async def insert_events_graph(self, events: List[CanonicalEvent], extractions: List[Dict[str, Any]]):
         """
         Inserts a batch of events and their extracted data into Neo4j.
+        FIXED: Now creates ALL properties and relationships that query methods expect.
         """
         if not events or not extractions or len(events) != len(extractions):
             log.warning("Events and extractions list mismatch or empty in GraphStore.")
@@ -94,69 +96,113 @@ class GraphStore:
                     "assignee": task_assignee
                 })
             
+            # Extract entity information with types
+            entities_data = []
+            for entity in extraction.get('entities', []):
+                entities_data.append({
+                    "text": entity.get('text', ''),
+                    "label": entity.get('label', 'MISC')
+                })
+            
             data_to_insert.append({
                 "event_id": event.id,
                 "raw_text": event.text,
+                "text": event.text,  # ADDED: For compatibility
                 "redacted_text": extraction.get("redacted_text", event.text),
                 "source": event.source,
                 "timestamp": event.timestamp.isoformat(),
                 "user_id": event.user_id,
                 "user_name": event.user_name or event.user_id,
+                "username": event.user_name or event.user_id,  # ADDED: For User node
                 "channel_id": event.channel or "unknown_channel",
-                "entities": [e['text'] for e in extraction.get('entities', [])],
+                "entities": entities_data,
                 "decisions": [d['text'] for d in extraction.get('decisions', [])],
                 "tasks": tasks_data,
                 "sentiment_label": sentiment_info.get('label', 'neutral'),
-                "sentiment_score": sentiment_info.get('score', 0.0)
+                "sentimentLabel": sentiment_info.get('label', 'neutral'),  # ADDED: Camel case version
+                "sentiment_score": sentiment_info.get('score', 0.0),
+                "sentimentScore": sentiment_info.get('score', 0.0)  # ADDED: Camel case version
             })
 
         query = """
         UNWIND $events AS e
         
+        // Create User node with ALL properties
         MERGE (speaker:User {user_id: e.user_id}) 
-        ON CREATE SET speaker.name = e.user_name
+        ON CREATE SET 
+            speaker.name = e.user_name,
+            speaker.username = e.username
+        ON MATCH SET
+            speaker.name = e.user_name,
+            speaker.username = e.username
         
+        // Create Channel node with ALL properties
         MERGE (c:Channel {channel_id: e.channel_id}) 
-        ON CREATE SET c.source = e.source
+        ON CREATE SET 
+            c.source = e.source,
+            c.name = e.channel_id
 
+        // Create Event node with ALL properties
         MERGE (evt:Event {event_id: e.event_id})
         ON CREATE SET 
             evt.raw_text = e.raw_text,
+            evt.text = e.text,
             evt.redacted_text = e.redacted_text,
             evt.timestamp = datetime(e.timestamp),
             evt.source = e.source,
-            evt.sentimentLabel = e.sentiment_label,
-            evt.sentimentScore = e.sentiment_score
+            evt.sentimentLabel = e.sentimentLabel,
+            evt.sentimentScore = e.sentimentScore,
+            evt.sentiment_label = e.sentiment_label,
+            evt.sentiment_score = e.sentiment_score
         ON MATCH SET
             evt.raw_text = e.raw_text,
+            evt.text = e.text,
             evt.redacted_text = e.redacted_text,
             evt.timestamp = datetime(e.timestamp),
             evt.source = e.source,
-            evt.sentimentLabel = e.sentiment_label,
-            evt.sentimentScore = e.sentiment_score
+            evt.sentimentLabel = e.sentimentLabel,
+            evt.sentimentScore = e.sentimentScore,
+            evt.sentiment_label = e.sentiment_label,
+            evt.sentiment_score = e.sentiment_score
 
+        // Create SAID relationship
         MERGE (speaker)-[:SAID]->(evt)
+        
+        // Create IN_CHANNEL relationship
         MERGE (evt)-[:IN_CHANNEL]->(c)
 
-        FOREACH (entity_name IN e.entities |
-            MERGE (en:Entity {name: entity_name})
+        // Create Entity nodes and MENTIONS relationships
+        FOREACH (entity IN e.entities |
+            MERGE (en:Entity {name: entity.text})
+            ON CREATE SET en.type = entity.label
+            ON MATCH SET en.type = entity.label
             MERGE (evt)-[:MENTIONS]->(en)
         )
 
+        // Create Decision nodes and LEAD_TO relationships
         FOREACH (idx IN range(0, size(e.decisions)-1) |
             MERGE (d:Decision {decision_id: e.event_id + '-decision-' + toString(idx)})
-            ON CREATE SET d.text = e.decisions[idx]
+            ON CREATE SET 
+                d.text = e.decisions[idx],
+                d.summary = e.decisions[idx]
+            ON MATCH SET
+                d.text = e.decisions[idx],
+                d.summary = e.decisions[idx]
             MERGE (evt)-[:LEAD_TO]->(d)
         )
 
+        // Create Task nodes with ALL properties and CREATES relationships
         FOREACH (idx IN range(0, size(e.tasks)-1) |
             MERGE (t:Task {task_id: e.event_id + '-task-' + toString(idx)})
             ON CREATE SET 
                 t.text = e.tasks[idx].text,
+                t.summary = e.tasks[idx].text,
                 t.status = 'open',
-                t.assignee_id = e.tasks[idx].assignee
+                t.assignee_id = e.tasks[idx].assignee,
+                t.created_at = datetime(e.timestamp)
             ON MATCH SET
                 t.text = e.tasks[idx].text,
+                t.summary = e.tasks[idx].text,
                 t.assignee_id = e.tasks[idx].assignee
             MERGE (evt)-[:CREATES]->(t)
         )
@@ -186,10 +232,10 @@ class GraphStore:
         query = """
         MATCH (t:Task {status: 'open'})
         WHERE t.assignee_id IS NOT NULL AND t.assignee_id <> ''
-          AND NOT (t)<-[:ASSIGNED_TO]-(:User)
+          AND NOT EXISTS((t)<-[:ASSIGNED_TO]-(:User))
         
         MERGE (u:User {user_id: t.assignee_id})
-        ON CREATE SET u.name = t.assignee_id
+        ON CREATE SET u.name = t.assignee_id, u.username = t.assignee_id
         
         MERGE (u)-[r:ASSIGNED_TO]->(t)
         
@@ -251,10 +297,10 @@ class GraphStore:
               AND size(agree_evt.raw_text) < 150
               AND agree_evt.raw_text =~ $agreement_pattern
 
-            MATCH (orig_evt:Event)<-[:IN_CHANNEL]->(agree_evt)
+            MATCH (c:Channel)<-[:IN_CHANNEL]-(agree_evt)
+            MATCH (c)<-[:IN_CHANNEL]-(orig_evt:Event)
             WHERE orig_evt.timestamp < agree_evt.timestamp
               AND agree_evt.timestamp - orig_evt.timestamp < duration({minutes: 5})
-              AND NOT (agree_evt)<-[:SAID]-(:User)-[:SAID]->(orig_evt)
 
             MATCH (agree_user:User)-[:SAID]->(agree_evt)
             MATCH (orig_user:User)-[:SAID]->(orig_evt)
@@ -295,15 +341,12 @@ class GraphStore:
             OPTIONAL MATCH (evt:Event)-[:CREATES]->(t)
             
             RETURN 
-                t.task_id AS task_id,
-                t.text AS text,
+                t.task_id AS id,
+                t.text AS title,
                 t.status AS status,
-                u.user_id AS assignee_id,
-                u.name AS assignee_name,
-                evt.event_id AS source_event_id,
-                evt.source AS source_platform,
-                evt.timestamp AS created_at
-            ORDER BY created_at DESC
+                COALESCE(u.user_id, t.assignee_id) AS assignee,
+                t.created_at AS due_date
+            ORDER BY t.created_at DESC
         """
         try:
             async with driver.session() as session:
@@ -311,8 +354,9 @@ class GraphStore:
                 tasks = []
                 async for record in results:
                     task_data = dict(record)
-                    if task_data.get('created_at'):
-                        task_data['created_at'] = task_data['created_at'].to_native().isoformat()
+                    # Convert Neo4j DateTime to ISO string
+                    if task_data.get('due_date') and hasattr(task_data['due_date'], 'to_native'):
+                        task_data['due_date'] = task_data['due_date'].to_native().isoformat()
                     tasks.append(task_data)
                 
                 log.info(f" ✓ Found {len(tasks)} open tasks.")
@@ -335,10 +379,10 @@ class GraphStore:
             WITH t
             OPTIONAL MATCH (u:User)-[:ASSIGNED_TO]->(t)
             RETURN
-                t.task_id AS task_id,
-                t.text AS text,
+                t.task_id AS id,
+                t.text AS title,
                 t.status AS status,
-                u.user_id AS assignee_id
+                COALESCE(u.user_id, t.assignee_id) AS assignee
         """
         try:
             async with driver.session() as session:
@@ -353,16 +397,16 @@ class GraphStore:
                 notification_data = {
                     "type": "TASK_UPDATE",
                     "payload": {
-                        "task_id": record["task_id"],
-                        "text": record["text"],
+                        "task_id": record["id"],
+                        "text": record["title"],
                         "status": record["status"],
                         "updated_by": user_id
                     }
                 }
-                if record["assignee_id"]:
+                if record["assignee"]:
                     asyncio.create_task(
                         notification_service.send_to_user(
-                            record["assignee_id"],
+                            record["assignee"],
                             notification_data
                         )
                     )
@@ -443,27 +487,40 @@ class GraphStore:
                 result = await session.run("""
                     MATCH (e:Event)
                     WHERE e.sentimentLabel IS NOT NULL
-                    RETURN e.sentimentLabel as label, count(*) as count
-                    ORDER BY count DESC
+                    WITH count(e) AS total_messages,
+                         sum(CASE WHEN e.sentimentLabel = 'positive' THEN 1 ELSE 0 END) AS positive_count,
+                         sum(CASE WHEN e.sentimentLabel = 'neutral' THEN 1 ELSE 0 END) AS neutral_count,
+                         sum(CASE WHEN e.sentimentLabel = 'negative' THEN 1 ELSE 0 END) AS negative_count
+                    RETURN 
+                        total_messages,
+                        positive_count,
+                        neutral_count,
+                        negative_count,
+                        CASE 
+                            WHEN positive_count > neutral_count AND positive_count > negative_count THEN 'positive'
+                            WHEN negative_count > neutral_count AND negative_count > positive_count THEN 'negative'
+                            ELSE 'neutral'
+                        END AS overall_sentiment,
+                        CASE WHEN total_messages > 0 THEN toFloat(positive_count) / total_messages * 100 ELSE 0.0 END AS positive_pct,
+                        CASE WHEN total_messages > 0 THEN toFloat(neutral_count) / total_messages * 100 ELSE 0.0 END AS neutral_pct,
+                        CASE WHEN total_messages > 0 THEN toFloat(negative_count) / total_messages * 100 ELSE 0.0 END AS negative_pct
                 """)
-                sentiment_dist = {}
-                async for record in result:
-                    sentiment_dist[record["label"]] = record["count"]
+                record = await result.single()
                 
-                result = await session.run("""
-                    MATCH (e:Event)
-                    WHERE e.sentimentScore IS NOT NULL
-                    RETURN avg(e.sentimentScore) as avg_score,
-                           min(e.sentimentScore) as min_score,
-                           max(e.sentimentScore) as max_score
-                """)
-                scores = await result.single()
-                
+                if record:
+                    return {
+                        "overall_sentiment": record["overall_sentiment"],
+                        "positive_pct": float(record["positive_pct"]),
+                        "neutral_pct": float(record["neutral_pct"]),
+                        "negative_pct": float(record["negative_pct"]),
+                        "total_messages": record["total_messages"]
+                    }
                 return {
-                    "sentiment_distribution": sentiment_dist,
-                    "average_score": float(scores["avg_score"] or 0.0),
-                    "min_score": float(scores["min_score"] or 0.0),
-                    "max_score": float(scores["max_score"] or 0.0)
+                    "overall_sentiment": "neutral",
+                    "positive_pct": 0.0,
+                    "neutral_pct": 0.0,
+                    "negative_pct": 0.0,
+                    "total_messages": 0
                 }
         except Exception as e:
             log.error(f"Error getting sentiment stats: {e}")
@@ -546,12 +603,11 @@ class GraphStore:
             MATCH (c:Channel)<-[:IN_CHANNEL]-(e:Event)
             WHERE e.sentimentScore IS NOT NULL
             RETURN c.channel_id AS channel,
-                   COUNT(e) AS message_count,
-                   AVG(e.sentimentScore) AS average_score,
-                   SUM(CASE WHEN e.sentimentLabel = 'positive' THEN 1 ELSE 0 END) AS positive,
-                   SUM(CASE WHEN e.sentimentLabel = 'neutral' THEN 1 ELSE 0 END) AS neutral,
-                   SUM(CASE WHEN e.sentimentLabel = 'negative' THEN 1 ELSE 0 END) AS negative
-            ORDER BY message_count DESC
+                   count(e) AS total,
+                   sum(CASE WHEN e.sentimentLabel = 'positive' THEN 1 ELSE 0 END) AS positive,
+                   sum(CASE WHEN e.sentimentLabel = 'neutral' THEN 1 ELSE 0 END) AS neutral,
+                   sum(CASE WHEN e.sentimentLabel = 'negative' THEN 1 ELSE 0 END) AS negative
+            ORDER BY total DESC
             LIMIT 10
         """
         try:
@@ -570,12 +626,16 @@ class GraphStore:
             WHERE e.timestamp > datetime() - duration({days: $days_limit})
               AND e.sentimentScore IS NOT NULL
             WITH date(e.timestamp) AS day, e.sentimentScore AS score, e.sentimentLabel AS label
-            RETURN day,
-                   AVG(score) AS average_score,
-                   COUNT(*) AS message_count,
-                   SUM(CASE WHEN label = 'positive' THEN 1 ELSE 0 END) AS positive,
-                   SUM(CASE WHEN label = 'neutral' THEN 1 ELSE 0 END) AS neutral,
-                   SUM(CASE WHEN label = 'negative' THEN 1 ELSE 0 END) AS negative
+            WITH day,
+                 toFloat(sum(CASE WHEN label = 'positive' THEN 1 ELSE 0 END)) AS positive,
+                 toFloat(sum(CASE WHEN label = 'neutral' THEN 1 ELSE 0 END)) AS neutral,
+                 toFloat(sum(CASE WHEN label = 'negative' THEN 1 ELSE 0 END)) AS negative,
+                 toFloat(count(*)) AS total
+            RETURN 
+                toString(day) AS date,
+                CASE WHEN total > 0 THEN positive / total ELSE 0.0 END AS positive,
+                CASE WHEN total > 0 THEN neutral / total ELSE 0.0 END AS neutral,
+                CASE WHEN total > 0 THEN negative / total ELSE 0.0 END AS negative
             ORDER BY day ASC
         """
         try:
@@ -584,12 +644,10 @@ class GraphStore:
                 timeline = []
                 async for r in results:
                     timeline.append({
-                        "date": r["day"].isoformat(),
-                        "average_score": r["average_score"] or 0.0,
-                        "message_count": r["message_count"],
-                        "positive": r["positive"],
-                        "neutral": r["neutral"],
-                        "negative": r["negative"]
+                        "date": r["date"],
+                        "positive": float(r["positive"]),
+                        "neutral": float(r["neutral"]),
+                        "negative": float(r["negative"])
                     })
                 return timeline
         except Exception as e:
@@ -617,7 +675,7 @@ class GraphStore:
                 query_channels = """
                     MATCH (c:Channel)<-[:IN_CHANNEL]-(e:Event)
                     WHERE e.timestamp > datetime() - duration({days: 30})
-                    RETURN c.channel_id AS name, count(e) AS value
+                    RETURN c.channel_id AS label, count(e) AS value
                     ORDER BY value DESC LIMIT 5
                 """
                 results = await session.run(query_channels)
@@ -627,7 +685,7 @@ class GraphStore:
                 query_contributors = """
                     MATCH (u:User)-[:SAID]->(e:Event)
                     WHERE e.timestamp > datetime() - duration({days: 30})
-                    RETURN u.name AS name, count(e) AS value
+                    RETURN u.name AS label, count(e) AS value
                     ORDER BY value DESC LIMIT 5
                 """
                 results = await session.run(query_contributors)
@@ -636,17 +694,19 @@ class GraphStore:
                 # 3. Sentiment Over Time
                 analytics["sentiment_over_time"] = await self.get_sentiment_timeline(days_limit=30)
                 
-                # 4. Average Response Time (Proxy query)
+                # 4. Average Response Time (Simplified)
                 query_response_time = """
-                    MATCH (q:Event)-[:IN_CHANNEL]->(r:Event)
-                    WHERE q.timestamp > datetime() - duration({days: 30})
-                      AND q.raw_text CONTAINS '?'
-                      AND r.timestamp > q.timestamp
-                      AND duration.between(q.timestamp, r.timestamp) < duration({hours: 1})
-                    MATCH (qu:User)-[:SAID]->(q)
-                    MATCH (ru:User)-[:SAID]->(r)
-                    WHERE qu <> ru
-                    WITH duration.between(q.timestamp, r.timestamp).seconds AS responseInSeconds
+                    MATCH (c:Channel)<-[:IN_CHANNEL]-(e1:Event)
+                    WHERE e1.timestamp > datetime() - duration({days: 30})
+                      AND e1.raw_text CONTAINS '?'
+                    MATCH (c)<-[:IN_CHANNEL]-(e2:Event)
+                    WHERE e2.timestamp > e1.timestamp
+                      AND e2.timestamp < e1.timestamp + duration({hours: 1})
+                    MATCH (u1:User)-[:SAID]->(e1)
+                    MATCH (u2:User)-[:SAID]->(e2)
+                    WHERE u1.user_id <> u2.user_id
+                    WITH duration.between(e1.timestamp, e2.timestamp).seconds AS responseInSeconds
+                    WHERE responseInSeconds > 0
                     RETURN avg(responseInSeconds) AS avg_response_seconds
                 """
                 result = await session.run(query_response_time)
@@ -703,7 +763,8 @@ class GraphStore:
             full_name: $full_name,
             role: $role,
             hashed_password: $hashed_password,
-            created_at: $created_at
+            created_at: $created_at,
+            user_id: $username
         })
         RETURN u.username AS username, 
                u.email AS email, 
@@ -748,8 +809,6 @@ class GraphStore:
             log.error(f"Error getting graph context: {e}")
             return {}
 
-    # --- REMOVED: Old get_trust_graph method ---
-
     # --- NEW TEAM DYNAMICS METHODS ---
     async def get_knowledge_silos(self, threshold: float = 0.8) -> List[Dict[str, Any]]:
         """
@@ -757,32 +816,18 @@ class GraphStore:
         """
         driver = await db_manager.get_neo4j_driver()
         query = """
-        // 1. Find all Tasks and the Users assigned to them
         MATCH (t:Task)<-[:ASSIGNED_TO]-(u:User)
-        WITH t, u
-        // 2. Count total participants for each task
-        WITH t, count(u) AS total_participants, collect(u) AS participants
-        // 3. Filter for tasks with few participants (e.g., < 3)
-        WHERE total_participants < 3
-        // 4. Unwind the single participant
-        UNWIND participants AS solo_user
-        // 5. Get the total event/commit count for this task
-        MATCH (t)<-[:RELATES_TO]-(e:Event)
-        WITH t, solo_user, count(e) AS total_events
-        WHERE total_events > 5 // Only consider non-trivial tasks
-        // 6. Find how many of those events were by the solo user
-        MATCH (solo_user)-[:SAID]->(e:Event)-[:RELATES_TO]->(t)
-        WITH t, solo_user, total_events, count(e) AS user_events
-        // 7. Calculate the percentage
-        WITH t, solo_user, total_events, user_events,
-             (toFloat(user_events) / toFloat(total_events)) AS percentage
-        // 8. Filter by our silo threshold
-        WHERE percentage >= $threshold
-        RETURN
-            t.text AS topic,
-            solo_user.user_id AS user_id,
-            solo_user.name AS user_name,
-            user_events AS event_count,
+        WITH t.text AS topic, u, count(*) AS assignment_count
+        WITH topic, collect({user: u, count: assignment_count}) AS users, sum(assignment_count) AS total
+        UNWIND users AS user_data
+        WITH topic, user_data.user AS user, user_data.count AS user_count, total
+        WITH topic, user, toFloat(user_count) / toFloat(total) AS percentage, user_count
+        WHERE percentage >= $threshold AND total >= 3
+        RETURN 
+            topic,
+            user.user_id AS user_id,
+            user.name AS user_name,
+            user_count AS event_count,
             percentage
         ORDER BY percentage DESC
         LIMIT 10
@@ -802,23 +847,19 @@ class GraphStore:
         """
         driver = await db_manager.get_neo4j_driver()
         query = """
-        // 1. Get all users
         MATCH (u:User)
-        // 2. Count agreements *received*
-        OPTIONAL MATCH (u)<-[:AGREES_WITH]-(:User)
-        WITH u, count(DISTINCT _) AS agreements_received
-        // 3. Count replies *received*
-        OPTIONAL MATCH (u)-[:SAID]->(e:Event)<-[:REPLIED_TO]-(:Event)
-        WITH u, agreements_received, count(DISTINCT _) AS replies_received
-        // 4. Create a weighted score
-        WITH u, agreements_received, replies_received,
-             (agreements_received * 2) + replies_received AS total_score
+        OPTIONAL MATCH (u)<-[:AGREES_WITH]-(other:User)
+        WITH u, count(DISTINCT other) AS agreements_received
+        OPTIONAL MATCH (u)-[:SAID]->(e:Event)
+        WITH u, agreements_received, count(DISTINCT e) AS messages_sent
+        WITH u, agreements_received, messages_sent,
+             (agreements_received * 2) + messages_sent AS total_score
         WHERE total_score > 0
         RETURN
             u.user_id AS user_id,
             u.name AS user_name,
             agreements_received,
-            replies_received,
+            messages_sent AS replies_received,
             total_score
         ORDER BY total_score DESC
         LIMIT 10
@@ -834,45 +875,21 @@ class GraphStore:
 
     async def get_team_interactions(self) -> List[Dict[str, Any]]:
         """
-        Finds interactions (replies) between different teams (Channels).
-        This is a simplified version using Channels as "teams".
+        Finds interactions between different channels (acting as teams).
         """
         driver = await db_manager.get_neo4j_driver()
         query = """
-        // 1. Define teams (using a simple heuristic for now)
-        // Let's assume channels starting with 'proj-' are project teams
-        // and channels starting with 'design-' are design teams
-        MATCH (c:Channel)
-        WHERE c.channel_id STARTS WITH 'proj-' OR c.channel_id STARTS WITH 'design-'
-        WITH CASE
-            WHEN c.channel_id STARTS WITH 'proj-' THEN 'Project'
-            WHEN c.channel_id STARTS WITH 'design-' THEN 'Design'
-            ELSE 'Other'
-        END AS team_name, c
-        // 2. Find replies between users in these channels
-        MATCH (u1:User)-[:SAID]->(e1:Event)-[:REPLIED_TO]->(e2:Event)<-[:SAID]-(u2:User)
-        WHERE e1.timestamp > datetime() - duration({days: 30}) // Look at last 30 days
-          AND u1 <> u2
-        // 3. Find the teams for each event
-        MATCH (e1)-[:IN_CHANNEL]->(c1:Channel)
-        MATCH (e2)-[:IN_CHANNEL]->(c2:Channel)
-        WITH *, 
-             CASE WHEN c1.channel_id STARTS WITH 'proj-' THEN 'Project' 
-                  WHEN c1.channel_id STARTS WITH 'design-' THEN 'Design' 
-                  ELSE 'Other' END AS team_a,
-             CASE WHEN c2.channel_id STARTS WITH 'proj-' THEN 'Project' 
-                  WHEN c2.channel_id STARTS WITH 'design-' THEN 'Design' 
-                  ELSE 'Other' END AS team_b
-        // 4. Filter out internal-team chatter
-        WHERE team_a <> team_b
-          AND team_a <> 'Other' AND team_b <> 'Other'
-        // 5. Count the interactions
-        WITH
-            CASE WHEN team_a < team_b THEN team_a ELSE team_b END AS team1,
-            CASE WHEN team_a < team_b THEN team_b ELSE team_a END AS team2,
-            count(*) AS interaction_count
-        RETURN team1 AS team_a, team2 AS team_b, interaction_count
+        MATCH (c1:Channel)<-[:IN_CHANNEL]-(e1:Event)<-[:SAID]-(u1:User)
+        MATCH (c2:Channel)<-[:IN_CHANNEL]-(e2:Event)<-[:SAID]-(u2:User)
+        WHERE c1.channel_id < c2.channel_id
+          AND u1.user_id <> u2.user_id
+          AND e1.timestamp > datetime() - duration({days: 30})
+          AND e2.timestamp > datetime() - duration({days: 30})
+          AND abs(duration.between(e1.timestamp, e2.timestamp).seconds) < 3600
+        WITH c1.channel_id AS team_a, c2.channel_id AS team_b, count(*) AS interaction_count
+        RETURN team_a, team_b, interaction_count
         ORDER BY interaction_count DESC
+        LIMIT 10
         """
         try:
             async with driver.session() as session:
@@ -926,45 +943,45 @@ class GraphStore:
         driver = await db_manager.get_neo4j_driver()
        
         query = """
-        // Part 1: Find nodes matching the key entities
         WITH $key_entities AS entities
         MATCH (n)
-        WHERE (n:Task OR n:Project OR n:Decision)
-          AND any(entity IN entities WHERE toLower(n.text) CONTAINS toLower(entity) OR toLower(n.summary) CONTAINS toLower(entity))
+        WHERE (n:Task OR n:Decision)
+          AND any(entity IN entities WHERE toLower(n.text) CONTAINS toLower(entity) OR toLower(COALESCE(n.summary, '')) CONTAINS toLower(entity))
        
-        // Part 2: Collect dependencies linked to these nodes
-        OPTIONAL MATCH (d)-[r:DEPENDS_ON|:PART_OF]->(n)
+        OPTIONAL MATCH (d)-[r:DEPENDS_ON|:PART_OF|:CREATES]->(n)
         WITH n, collect(DISTINCT {
             node_type: labels(d)[0],
-            node_id: COALESCE(d.task_id, d.decision_id, d.project_id, d.id),
-            summary: COALESCE(d.text, d.summary, d.name),
+            node_id: COALESCE(d.task_id, d.decision_id, d.event_id, toString(id(d))),
+            summary: COALESCE(d.text, d.summary, d.name, 'Unknown'),
             link_type: type(r)
         }) AS dependencies
        
-        // Part 3: Collect sentiments related to these nodes
-        OPTIONAL MATCH (e:Event)-[:MENTIONS]->(n)
-        WHERE e.sentiment_label <> 'neutral'
+        OPTIONAL MATCH (e:Event)-[:MENTIONS|:LEAD_TO|:CREATES]->(n)
+        WHERE e.sentimentLabel <> 'neutral'
         WITH n, dependencies, e
-        ORDER BY e.sentiment_score DESC, e.timestamp DESC
+        ORDER BY e.sentimentScore DESC, e.timestamp DESC
         LIMIT 10
        
         MATCH (u:User)-[:SAID]->(e)
-        MATCH (c:Channel)-[:IN_CHANNEL]->(e)
+        MATCH (c:Channel)<-[:IN_CHANNEL]-(e)
        
         WITH n, dependencies, collect(DISTINCT {
             user_name: u.name,
             text: e.raw_text,
-            sentiment_label: e.sentiment_label,
-            sentiment_score: e.sentiment_score,
+            sentiment_label: e.sentimentLabel,
+            sentiment_score: e.sentimentScore,
             channel: c.channel_id,
             timestamp: toString(e.timestamp)
         }) AS sentiments
-        // Part 4: Aggregate all results
-        WITH collect(DISTINCT dependencies) AS all_deps_list,
-             collect(DISTINCT sentiments) AS all_sents_list
+        
+        WITH collect(dependencies) AS all_deps_nested,
+             collect(sentiments) AS all_sents_nested
             
-        WITH [item IN all_deps_list | item IN item WHERE item.node_id IS NOT NULL] AS flat_deps,
-             [item IN all_sents_list | item IN item WHERE item.user_name IS NOT NULL] AS flat_sents
+        WITH [dep_list IN all_deps_nested | [item IN dep_list WHERE item.node_id IS NOT NULL]] AS all_deps,
+             [sent_list IN all_sents_nested | [item IN sent_list WHERE item.user_name IS NOT NULL]] AS all_sents
+             
+        WITH reduce(acc = [], dep_list IN all_deps | acc + dep_list) AS flat_deps,
+             reduce(acc = [], sent_list IN all_sents | acc + sent_list) AS flat_sents
             
         RETURN flat_deps AS dependencies, flat_sents AS sentiments
         """

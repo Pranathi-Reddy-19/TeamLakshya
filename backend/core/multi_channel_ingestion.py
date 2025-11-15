@@ -951,7 +951,7 @@ class MultiChannelIngestionService:
         self.config = config or IngestionConfig()
         self.vector_store = vector_store or VectorStore()
         self.graph_store = graph_store or GraphStore()
-        self.connectors: List[DataConnector] = []
+        self.connectors: Dict[str, DataConnector] = {}
         self._init_connectors()
         
     def _init_connectors(self):
@@ -969,7 +969,7 @@ class MultiChannelIngestionService:
         for connector_cls in connector_classes:
             try:
                 connector = connector_cls(self.config)
-                self.connectors.append(connector)
+                self.connectors[connector.get_source_name()] = connector
                 print(f"✓ {connector.get_source_name()} connector initialized")
             except ImportError as e:
                 print(f"⚠ Failed to initialize {connector_cls.__name__}: {e}")
@@ -977,14 +977,30 @@ class MultiChannelIngestionService:
                 print(f"⚠ Failed to initialize {connector_cls.__name__}: {e}")
 
     def get_connector_status(self) -> List[Dict[str, Any]]:
-        """Get status of all connectors"""
-        return [
-            {
-                "source": conn.get_source_name(),
-                "configured": conn.is_configured()
-            }
-            for conn in self.connectors
-        ]
+        """
+        Get status of all connectors
+        
+        FIXED: Now returns the correct structure matching the ConnectorStatus model
+        with the required 'status' field instead of 'configured'
+        """
+        statuses = []
+        for source_name, connector in self.connectors.items():
+            is_configured = connector.is_configured()
+            
+            # Determine a status string based on configuration
+            if is_configured:
+                status_str = "configured"
+            else:
+                status_str = "not_configured"
+            
+            statuses.append({
+                "source": source_name,
+                "status": status_str,      # ADDED: Required field
+                "last_run": None,          # ADDED: Optional field (can be populated later)
+                "error": None              # ADDED: Optional field (can be populated later)
+            })
+        
+        return statuses
     
     async def run_ingestion_for_source(self, source_name: str) -> Dict[str, Any]:
         """Run ingestion for a specific source"""
@@ -992,7 +1008,7 @@ class MultiChannelIngestionService:
         print(f"SINGLE-CHANNEL INGESTION STARTED: {source_name}")
         print(f"{'='*60}")
         
-        connector = next((c for c in self.connectors if c.get_source_name() == source_name), None)
+        connector = self.connectors.get(source_name)
         
         if not connector:
             return {

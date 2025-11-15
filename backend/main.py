@@ -768,7 +768,8 @@ async def run_risk_analysis(
             raise HTTPException(400, "Could not extract key entities from decision.")
 
         # 2. Get embeddings for these entities
-        entity_embeddings = await asyncio.to_thread(embedding_model.embed_documents, key_entities)
+        # FIXED: Changed from embed_documents to get_embeddings
+        entity_embeddings = await asyncio.to_thread(embedding_model.get_embeddings, key_entities)
         
         # 3. Query the graph for dependencies and sentiments
         analysis_data = await gs.get_risk_analysis_data(key_entities, entity_embeddings)
