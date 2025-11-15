@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+
+# Google OAuth token. Contains user secrets!
+token.json

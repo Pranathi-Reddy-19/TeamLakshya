@@ -1,0 +1,37 @@
+fastapi
+uvicorn[standard]
+pydantic
+python-dotenv
+numpy # Often needed for data manipulation, safe to keep
+neo4j
+pymilvus~=2.4.5
+
+# --- NEW: Celery Task Queue ---
+celery
+
+# --- Connectors ---
+requests
+msal # For Microsoft Teams
+slack-sdk
+discord.py
+google-api-python-client 
+google-auth-httplib2 
+google-auth-oauthlib>=1.0.0
+notion-client # For Notion
+pypdf # For PDF file uploads
+python-docx # For .docx file uploads
+
+# --- Integrations & Meeting Intelligence ---
+jira          # For Jira integration
+openai-whisper # For audio transcription
+
+# --- Proactive Intelligence ---
+# apscheduler (REMOVED - Replaced by Celery Beat)
+
+# --- Authentication ---
+passlib[bcrypt]
+bcrypt==4.0.1
+python-jose[cryptography]
+
+# Add this line to your requirements.txt
+python-multipart

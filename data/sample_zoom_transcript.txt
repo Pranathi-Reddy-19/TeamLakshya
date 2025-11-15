@@ -1,0 +1,6 @@
+[00:01:15] [Speaker A (Alice)]: Okay, team sync for Project Phoenix. Main topic: v2 API release. What's the status, Bob?
+[00:01:30] [Speaker B (Bob)]: We're code-complete, but I'm worried about the integration tests. They seem flaky. I think we need another week.
+[00:02:10] [Speaker C (Charlie)]: Another week will push us past the client's deadline. What if we just simulate the failing integration?
+[00:02:45] [Speaker A (Alice)]: No, that's too risky. The decision is final: we will delay the release by one week to ensure stability. This is a high-trust area for the client. Bob, your action item is to inform MegaCorp. Charlie, your task is to write the new test suite.
+[00:03:15] [Speaker B (Bob)]: Understood.
+[00:03:20] [Speaker C (Charlie)]: Got it.

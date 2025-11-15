@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+slack-sdk
+requests        # Used for sending events to the main backend
+python-dotenv

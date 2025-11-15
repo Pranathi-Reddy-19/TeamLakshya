@@ -1,0 +1,37 @@
+[
+  {
+    "id": "msg-1",
+    "channel": "project-phoenix",
+    "user": "Alice",
+    "timestamp": "2025-10-18T14:30:00Z",
+    "text": "Quick update: The client (MegaCorp) loved the demo. The decision is to proceed with the v2 API deployment."
+  },
+  {
+    "id": "msg-2",
+    "channel": "project-phoenix",
+    "user": "Bob",
+    "timestamp": "2025-10-18T14:31:00Z",
+    "text": "Great news! @Charlie, can you take the action item to prepare the deployment scripts?"
+  },
+  {
+    "id": "msg-3",
+    "channel": "project-phoenix",
+    "user": "Charlie",
+    "timestamp": "2025-10-18T14:32:00Z",
+    "text": "On it. I'll have them ready by EOD tomorrow."
+  },
+  {
+    "id": "msg-4",
+    "channel": "project-phoenix",
+    "user": "Alice",
+    "timestamp": "2025-10-18T15:00:00Z",
+    "text": "Team, I'm feeling some burnout on this component. Let's watch our energy levels. Maybe we push the *internal* tools update?"
+  },
+  {
+    "id": "msg-5",
+    "channel": "project-phoenix",
+    "user": "Bob",
+    "timestamp": "2025-10-18T15:01:00Z",
+    "text": "Agree, my trust in the old logging system is low. Let's table that for now."
+  }
+]

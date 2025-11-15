@@ -1,0 +1,19 @@
+# ml/requirements.txt
+
+# --- Core ML/NLP ---
+scikit-learn
+spacy
+vaderSentiment
+sentence-transformers
+transformers[torch] # Use [torch] to ensure PyTorch is installed
+torch --index-url https://download.pytorch.org/whl/cpu # For CPU-only, or use 'cu118' etc. for GPU
+sentencepiece
+scipy
+pandas
+jupyter
+joblib
+
+
+# --- PII Detection ---
+presidio-analyzer
+presidio-anonymizer
