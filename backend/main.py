@@ -106,9 +106,12 @@ async def lifespan(app: FastAPI):
     # Audio & Jira Services
     print("Audio transcription service ready (in worker)")
     
+    # FIXED: Issue 3 - Changed from get_jira_client() to is_configured()
     try:
-        jira_service.get_jira_client()
-        print("Jira integration service ready")
+        if jira_service.is_configured():
+            print("Jira integration service ready")
+        else:
+            print("Jira integration service disabled: Missing ENV VARS")
     except Exception as e:
         print(f"Jira integration service disabled: {e}")
     
@@ -351,6 +354,8 @@ def read_root():
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
     """Handles persistent WebSocket connections for real-time notifications."""
+    # FIXED: Issue 1 - Added websocket.accept() here
+    await websocket.accept()  # <-- ADDED THIS LINE
     await notification_service.connect(websocket, user_id)
     try:
         while True:

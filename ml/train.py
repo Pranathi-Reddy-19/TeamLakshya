@@ -49,42 +49,36 @@ def generate_real_data():
     """
     print("Attempting to fetch real data from Neo4j...")
     
-    # This query makes assumptions about your graph schema.
-    # You may need to adjust node labels (e.g., :Task),
-    # relationships (e.g., -[:PART_OF]->), and
-    # property names (e.g., t.status, t.priority).
-    cypher_query = """
+    # FIXED: Issue 4 - Updated query to match actual graph schema
+    CYPHER_QUERY = """
     MATCH (t:Task)
     // Get the team size assigned to the task
     OPTIONAL MATCH (t)-[:ASSIGNED_TO]->(u:User)
     WITH t, count(u) as teamSize
     
-    // Get the project the task is part of
-    OPTIONAL MATCH (t)-[:PART_OF]->(p:Project)
-    
     // We only want 'completed' tasks to learn from
-    WHERE t.status IN ['Done', 'Completed', 'Cancelled'] 
-      AND t.createdDate IS NOT NULL 
-      AND t.completedDate IS NOT NULL
+    // Use the actual properties: 'status' (not 'Done'), 'created_at', 'last_updated'
+    WHERE t.status = 'closed'
+      AND t.created_at IS NOT NULL 
+      AND t.last_updated IS NOT NULL
       
     // Calculate the duration
-    WITH t, p, teamSize, 
-         duration.between(t.createdDate, t.completedDate) as taskDuration
+    WITH t, teamSize, 
+         duration.between(t.created_at, t.last_updated) as taskDuration
          
     RETURN
-        t.title as decision_text,
-        // Use task priority as 'urgency', default to 'medium'
-        COALESCE(t.priority, 'medium') as urgency,
+        t.text as decision_text, // Use t.text, not t.title
+        // 'priority' does not exist, default to 'medium'
+        'medium' as urgency,
         teamSize as team_size,
-        // Use project key as 'project_code', default to 'GENERAL'
-        COALESCE(p.key, 'GENERAL') as project_code,
+        // 'Project' nodes do not exist, default to 'GENERAL'
+        'GENERAL' as project_code,
         // Get timeline in whole days
         taskDuration.days as timeline_days,
         // Map status to an 'outcome'
+        // We only have 'open' and 'closed'
         CASE t.status
-            WHEN 'Done' THEN 'high'
-            WHEN 'Completed' THEN 'high'
-            WHEN 'Cancelled' THEN 'low'
+            WHEN 'closed' THEN 'high'
             ELSE 'medium'
         END as outcome_category
     """
@@ -93,7 +87,7 @@ def generate_real_data():
     try:
         driver = get_neo4j_driver()
         with driver.session() as session:
-            results = session.run(cypher_query)
+            results = session.run(CYPHER_QUERY)
             data = [record.data() for record in results]
             
             if not data:
