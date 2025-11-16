@@ -559,7 +559,9 @@ const Connectors: React.FC = () => {
         <AudioUploadCard />
 
         {/* Dynamic Connectors */}
-        {connectors.map((conn) => (
+        {connectors
+          .filter(conn => conn.source !== 'notion')
+          .map((conn) => (
           <ConnectorCard
             key={conn.source}
             source={conn.source}
