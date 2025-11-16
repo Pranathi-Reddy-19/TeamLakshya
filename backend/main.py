@@ -359,8 +359,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
     await notification_service.connect(websocket, user_id)
     try:
         while True:
-            data = await websocket.receive_text()
-            print(f"Received message from {user_id}: {data}")
+            # FIXED: Keep the connection alive without waiting for a message
+            await asyncio.sleep(60)
     except WebSocketDisconnect:
         notification_service.disconnect(user_id)
     except Exception as e:
