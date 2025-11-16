@@ -488,13 +488,15 @@ const Connectors: React.FC = () => {
       
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+      console.error(err);
+      // FIXED: Reset status if the API call itself fails
       setResultState((prev) => ({
         ...prev,
         [source]: {
           source,
           status: 'error',
           error: errorMsg,
-          message: errorMsg,
+          message: 'Failed to start task',
           total_events: 0,
           vectors_inserted: 0,
           duration_seconds: 0
@@ -556,8 +558,6 @@ const Connectors: React.FC = () => {
         {/* Audio Upload Card */}
         <AudioUploadCard />
 
-        {/* --- THIS IS THE FIX --- */}
-        {/* This block was commented out in your file. I have uncommented it. */}
         {/* Dynamic Connectors */}
         {connectors.map((conn) => (
           <ConnectorCard
@@ -569,7 +569,6 @@ const Connectors: React.FC = () => {
             resultState={resultState}
           />
         ))}
-        {/* --- END OF FIX --- */}
       </div>
     </div>
   );

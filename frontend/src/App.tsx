@@ -12,12 +12,8 @@ import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import MainChat from './pages/MainChat';
 import AnalyticsDashboard from './pages/AnalyticsDashboard';
-
-// --- CORRECT IMPORTS ---
 import RiskAnalysisPage from './pages/RiskAnalysisPage';
-import TeamDynamicsPage from './pages/TeamDynamicsPage'; // <-- We import the new page
-// ---
-
+import TeamDynamicsPage from './pages/TeamDynamicsPage';
 import Connectors from './pages/Connectors';
 import Productivity from './pages/Productivity';
 import TeamAnalytics from './pages/TeamAnalytics';
@@ -46,14 +42,14 @@ function App() {
 
                   {/* Analytics */}
                   <Route path="analytics/sentiment" element={<AnalyticsDashboard />} />
-                  
-                  {/* --- CORRECT ROUTES --- */}
-                  <Route path="analytics/team-dynamics" element={<TeamDynamicsPage />} /> 
                   <Route path="analytics/performance" element={<TeamAnalytics />} />
-                  <Route path="analytics/risk-analysis" element={<RiskAnalysisPage />} />
+                  
+                  {/* FIXED: Team Dynamics route matches Sidebar link */}
+                  <Route path="team-dynamics" element={<TeamDynamicsPage />} />
 
                   {/* Tools */}
                   <Route path="productivity" element={<Productivity />} />
+                  <Route path="predictive-suite" element={<RiskAnalysisPage />} />
                   <Route path="connectors" element={<Connectors />} />
 
                   {/* Utility */}
@@ -62,8 +58,9 @@ function App() {
 
                   {/* Legacy Redirects */}
                   <Route path="analytics" element={<Navigate to="/analytics/sentiment" replace />} />
-                  <Route path="trust-graph" element={<Navigate to="/analytics/team-dynamics" replace />} />
-                  <Route path="predictive-suite" element={<Navigate to="/analytics/risk-analysis" replace />} />
+                  <Route path="trust-graph" element={<Navigate to="/team-dynamics" replace />} />
+                  <Route path="analytics/team-dynamics" element={<Navigate to="/team-dynamics" replace />} />
+                  <Route path="analytics/trust" element={<Navigate to="/team-dynamics" replace />} />
 
                   {/* Catch-all */}
                   <Route path="*" element={<Navigate to="/chat" replace />} />

@@ -268,9 +268,9 @@ const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggleCollapse }) => {
             onClick={handleLinkClick}
           />
           <SidebarLink
-            to="/analytics/trust"
+            to="/team-dynamics"
             icon={<UserGroupIcon />}
-            label="Trust Network"
+            label="Team Dynamics"
             isCollapsed={isCollapsed && !isMobile}
             onClick={handleLinkClick}
           />
