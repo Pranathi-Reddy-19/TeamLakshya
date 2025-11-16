@@ -45,26 +45,33 @@ const NotificationBell: React.FC = () => {
   // WebSocket with Reconnection
   useEffect(() => {
     if (!USER_ID) {
+      console.log('❌ No user ID available, skipping WebSocket connection');
       setNotifications([]);
       setUnreadCount(0);
       return;
     }
 
     const connect = () => {
-      if (wsRef.current) return;
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        console.log('✓ WebSocket already connected');
+        return;
+      }
 
       try {
+        console.log(`🔌 Connecting WebSocket for user: ${USER_ID}`);
         const ws = new WebSocket(`${WS_URL}/${USER_ID}`);
         wsRef.current = ws;
 
         ws.onopen = () => {
-          console.log(`🔔 Notifications connected for ${USER_ID}`);
+          console.log(`✓ Notifications WebSocket connected for ${USER_ID}`);
           reconnectAttempts.current = 0;
         };
 
         ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
+            console.log('📨 Received notification:', data);
+            
             const notif: Notification = {
               id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
               type: data.type || 'info',
@@ -73,33 +80,37 @@ const NotificationBell: React.FC = () => {
               read: false,
               payload: data.payload,
             };
+            
             setNotifications((prev) => [notif, ...prev].slice(0, 50));
             setUnreadCount((c) => c + 1);
           } catch (err) {
-            console.error('Invalid WS message:', err);
+            console.error('❌ Invalid WebSocket message:', err);
           }
         };
 
-        ws.onclose = () => {
+        ws.onclose = (event) => {
           wsRef.current = null;
-          console.log('WebSocket closed. Reconnecting...');
+          console.log(`🔌 WebSocket closed (Code: ${event.code}). Reconnecting...`);
+          
           const delay = Math.min(1000 * 2 ** reconnectAttempts.current, 10000);
           reconnectAttempts.current++;
+          
           reconnectTimeout.current = setTimeout(connect, delay);
         };
 
-        ws.onerror = () => {
-          console.error('WebSocket error');
+        ws.onerror = (error) => {
+          console.error('❌ WebSocket error:', error);
           ws.close();
         };
       } catch (err) {
-        console.error('Failed to create WebSocket:', err);
+        console.error('❌ Failed to create WebSocket:', err);
       }
     };
 
     connect();
 
     return () => {
+      console.log('🧹 Cleaning up WebSocket connection');
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
@@ -110,9 +121,10 @@ const NotificationBell: React.FC = () => {
     };
   }, [USER_ID]);
 
-  // Load Mock Data (Dev Fallback)
+  // Load Mock Data (Dev Fallback) - only if no real notifications
   useEffect(() => {
-    if (notifications.length === 0 && !USER_ID) {
+    if (notifications.length === 0 && USER_ID) {
+      console.log('📝 Loading mock notifications for development');
       const mock: Notification[] = [
         {
           id: 'mock-1',
@@ -131,7 +143,7 @@ const NotificationBell: React.FC = () => {
         {
           id: 'mock-3',
           type: 'alert',
-          message: 'Urgent: #prod-down incident',
+          message: 'System: Backend connected successfully',
           timestamp: new Date(Date.now() - 2 * 3600000).toISOString(),
           read: true,
         },
@@ -139,7 +151,7 @@ const NotificationBell: React.FC = () => {
       setNotifications(mock);
       setUnreadCount(mock.filter(n => !n.read).length);
     }
-  }, [USER_ID, notifications.length]);
+  }, [USER_ID]);
 
   // Actions
   const markAsRead = (id: string) => {
@@ -169,7 +181,9 @@ const NotificationBell: React.FC = () => {
       alert: '🚨',
       info: 'ℹ️',
       NEW_TASK: '✅',
+      TASK_UPDATE: '🔄',
       MENTION: '@',
+      SYSTEM: '⚙️',
     };
     return icons[type] || '🔔';
   };
@@ -228,12 +242,12 @@ const NotificationBell: React.FC = () => {
         )}
       </button>
 
-      {/* Dropdown - FIXED POSITIONING */}
+      {/* Dropdown */}
       {showDropdown && (
         <div
           style={{
             position: 'absolute',
-            top: 'calc(100% + 8px)', // FIXED: Changed from bottom to top
+            top: 'calc(100% + 8px)',
             right: 0,
             width: 340,
             maxHeight: '80vh',
