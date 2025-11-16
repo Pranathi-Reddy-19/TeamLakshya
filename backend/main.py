@@ -354,12 +354,11 @@ def read_root():
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
     """Handles persistent WebSocket connections for real-time notifications."""
-    # FIXED: Issue 1 - Added websocket.accept() here
-    await websocket.accept()  # <-- ADDED THIS LINE
+    await websocket.accept()
     await notification_service.connect(websocket, user_id)
     try:
         while True:
-            # FIXED: Keep the connection alive without waiting for a message
+            # Keep the connection alive without waiting for a message
             await asyncio.sleep(60)
     except WebSocketDisconnect:
         notification_service.disconnect(user_id)

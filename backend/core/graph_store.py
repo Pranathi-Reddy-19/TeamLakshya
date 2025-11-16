@@ -342,7 +342,7 @@ class GraphStore:
             
             RETURN 
                 t.task_id AS id,
-                t.text AS title,
+                COALESCE(t.text, 'Untitled Task') AS title,
                 t.status AS status,
                 COALESCE(u.user_id, t.assignee_id) AS assignee,
                 t.created_at AS due_date
