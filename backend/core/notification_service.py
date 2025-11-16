@@ -43,7 +43,7 @@ class NotificationService:
         if websocket:
             try:
                 await websocket.send_text(json.dumps(message_data))
-                print(f"Sent notification to {user_id}: {message_data['type']}")
+                print(f"✓ Sent notification to {user_id}: {message_data['type']}")
             except Exception as e:
                 # Handle cases where the connection might be broken
                 print(f"❌ Error sending to {user_id}: {e}. Disconnecting.")

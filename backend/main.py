@@ -420,8 +420,9 @@ async def run_ingestion_for_source(
         details={"source": source_name}
     )
     
-    print(f"Queuing ingestion task for {source_name}")
-    run_ingestion_task.delay(source_name, ingestion_config.lookback_hours)
+    print(f"Queuing ingestion task for {source_name} (user: {current_user.username})")
+    # UPDATED: Pass username to Celery task
+    run_ingestion_task.delay(source_name, ingestion_config.lookback_hours, current_user.username)
     
     return IngestionRunResponse(
         source=source_name,
@@ -508,8 +509,9 @@ async def upload_audio_file(
         with temp_file_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
-        print(f"Audio file saved to {temp_file_path}")
-        process_audio_task.delay(str(temp_file_path), file.filename)
+        print(f"Audio file saved to {temp_file_path} (user: {current_user.username})")
+        # UPDATED: Pass username to Celery task
+        process_audio_task.delay(str(temp_file_path), file.filename, current_user.username)
 
         return AudioUploadResponse(
             file_name=file.filename,

@@ -42,10 +42,15 @@ def run_async_task(task_coro):
 
 # --- Task 1: Audio Processing ---
 @celery_app.task(name="backend.tasks.process_audio_task")
-def process_audio_task(temp_file_path_str: str, original_filename: str):
+def process_audio_task(temp_file_path_str: str, original_filename: str, username: str):
     """
     Celery task to transcribe audio, create a CanonicalEvent, and ingest it.
     Sets up a new async context for each run.
+    
+    Args:
+        temp_file_path_str: Path to the temporary audio file
+        original_filename: Original name of the uploaded file
+        username: Username of the user who uploaded the file (for notifications)
     """
     
     # FIXED: Issue 2 - Wrapped entire function in try...finally
@@ -69,7 +74,7 @@ def process_audio_task(temp_file_path_str: str, original_filename: str):
             temp_file_path = Path(temp_file_path_str)
             
             try:
-                print(f"Task process_audio_task: Starting for {original_filename}")
+                print(f"Task process_audio_task: Starting for {original_filename} (user: {username})")
                 result = audio_service.transcribe_audio_file(str(temp_file_path))
                 text = result.get("text")
                 
@@ -92,10 +97,14 @@ def process_audio_task(temp_file_path_str: str, original_filename: str):
                 
                 print(f"Task process_audio_task: Successfully processed {original_filename}")
                 
-                # Notify user
-                await notification_service.broadcast({
+                # UPDATED: Send notification to specific user
+                await notification_service.send_to_user(username, {
                     "type": "AUDIO_PROCESSED",
-                    "payload": {"filename": original_filename, "status": "success"}
+                    "payload": {
+                        "filename": original_filename,
+                        "status": "success",
+                        "message": f"Audio file '{original_filename}' has been successfully transcribed and ingested."
+                    }
                 })
 
                 return f"Successfully processed {original_filename}"
@@ -104,9 +113,15 @@ def process_audio_task(temp_file_path_str: str, original_filename: str):
                 print(f"Task process_audio_task: FAILED for {original_filename}: {e}")
                 traceback.print_exc()
                 
-                await notification_service.broadcast({
+                # UPDATED: Send error notification to specific user
+                await notification_service.send_to_user(username, {
                     "type": "AUDIO_PROCESSED",
-                    "payload": {"filename": original_filename, "status": "error", "error": str(e)}
+                    "payload": {
+                        "filename": original_filename,
+                        "status": "error",
+                        "error": str(e),
+                        "message": f"Failed to process audio file '{original_filename}': {str(e)}"
+                    }
                 })
                 return f"Error processing {original_filename}: {e}"
                 
@@ -127,10 +142,15 @@ def process_audio_task(temp_file_path_str: str, original_filename: str):
 
 # --- Task 2: Manual Ingestion ---
 @celery_app.task(name="backend.tasks.run_ingestion_task")
-def run_ingestion_task(source_name: str, lookback_hours: int = 72):
+def run_ingestion_task(source_name: str, lookback_hours: int, username: str):
     """
     Celery task to run a manual ingestion job for a specific source.
     Sets up a new async context for each run.
+    
+    Args:
+        source_name: Name of the data source to ingest from
+        lookback_hours: How many hours of history to fetch
+        username: Username of the user who triggered the ingestion (for notifications)
     """
     
     # FIXED: Issue 2 - Wrapped entire function in try...finally
@@ -153,7 +173,7 @@ def run_ingestion_task(source_name: str, lookback_hours: int = 72):
                 graph_store=graph_store
             )
             
-            print(f"Task run_ingestion_task: Starting for {source_name}")
+            print(f"Task run_ingestion_task: Starting for {source_name} (user: {username})")
             stats = {}
             
             try:
@@ -162,6 +182,7 @@ def run_ingestion_task(source_name: str, lookback_hours: int = 72):
                 
                 print(f"Task run_ingestion_task: Completed for {source_name}. Events: {stats.get('total_events')}")
                 stats.setdefault("status", "success")
+                stats["message"] = f"Successfully ingested {stats.get('total_events', 0)} events from {source_name}"
                 
             except Exception as e:
                 print(f"Task run_ingestion_task: FAILED for {source_name}: {e}")
@@ -176,9 +197,9 @@ def run_ingestion_task(source_name: str, lookback_hours: int = 72):
                     "duration_seconds": 0
                 }
             
-            # 3. Broadcast notification
-            print(f"Broadcasting message: INGESTION_COMPLETE")
-            await notification_service.broadcast({
+            # UPDATED: Send notification to specific user instead of broadcast
+            print(f"Sending INGESTION_COMPLETE notification to user: {username}")
+            await notification_service.send_to_user(username, {
                 "type": "INGESTION_COMPLETE",
                 "payload": stats
             })
@@ -199,6 +220,8 @@ def process_webhook_task(source_name: str, payload: Dict[str, Any]):
     Celery task to process an incoming webhook.
     It identifies the source and dispatches to the correct handler.
     Sets up a new async context for each run.
+    
+    NOTE: Webhooks don't have a specific user context, so we broadcast notifications
     """
     
     # FIXED: Issue 2 - Wrapped entire function in try...finally
