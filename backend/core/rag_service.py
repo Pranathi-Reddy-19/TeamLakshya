@@ -49,13 +49,14 @@ class RAGService:
         print(f"RAG: Searching context for: '{query}' (top_k={top_k}, role={user_role})")
 
         try:
-            # Step 1: Embed query
-            # FIX: The method is get_embeddings, which takes a list and returns a list
-            query_embedding_list = self.embedding_service.get_embeddings([query])
+            # Step 1: Embed query (FIXED: Wrapped in asyncio.to_thread to prevent blocking)
+            query_embedding_list = await asyncio.to_thread(
+                self.embedding_service.get_embeddings, 
+                [query]
+            )
             if not query_embedding_list:
                 raise ValueError("Failed to generate query embedding.")
             query_embedding = query_embedding_list[0]
-            # END OF FIX
             
             print(f"  Generated embedding (dim: {len(query_embedding)})")
 
